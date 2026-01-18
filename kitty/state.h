@@ -365,8 +365,15 @@ typedef struct GlobalState {
     bool has_pending_resizes, has_pending_closes;
     bool check_for_active_animated_images;
     struct { double x, y; } default_dpi;
-    id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window;
+    id_type active_drag_in_window, tracked_drag_in_window, mouse_hover_in_window, active_drag_resize;
     int active_drag_button, tracked_drag_button;
+    struct {
+        bool active;
+        bool is_horizontal;  // true for horizontal border (N-S resize)
+        double start_x, start_y;  // mouse position at drag start
+        double border_x, border_y;  // center of the border being dragged (pixel coords)
+        int last_delta;  // accumulated delta in cells
+    } border_drag;
     CloseRequest quit_request;
     bool redirect_mouse_handling;
     WindowLogoTable *all_window_logos;

@@ -14,6 +14,7 @@ from contextlib import contextmanager, suppress
 from functools import partial
 from gettext import gettext as _
 from gettext import ngettext
+from math import floor
 from time import sleep
 from typing import (
     TYPE_CHECKING,
@@ -421,6 +422,7 @@ class Boss:
         )
         self.args: CLIOptions = args
         self.mouse_handler: Callable[[WindowSystemMouseEvent], None] | None = None
+        self.drag_resize_active = False
         set_boss(self)
         self.mappings: Mappings = Mappings(global_shortcuts, self.refresh_active_tab_bar)
         self.notification_manager: NotificationManager = NotificationManager(debug=self.args.debug_keyboard or self.args.debug_rendering)
@@ -2351,6 +2353,69 @@ class Boss:
         tab = self.active_tab
         if tab:
             tab.set_active_window(window_id)
+
+    def border_drag_resize(self, border_x: float, border_y: float, increment: int, is_horizontal: int) -> None:
+        """Called from C when user drags a window border to resize.
+
+        Args:
+            border_x, border_y: Center of the border being dragged (pixel coords)
+            increment: Delta in cells (positive = right/down)
+            is_horizontal: 1 if border LINE is horizontal (N-S resize), 0 if vertical (E-W resize)
+        """
+        tab = self.active_tab
+        if not tab:
+            return
+
+        layout = tab.current_layout
+        if not hasattr(layout, 'pairs_root'):
+            return
+
+        # Find the Pair whose border matches the given coordinates
+        # is_horizontal=1 means horizontal border LINE = vertical split (top/bottom) = Pair.horizontal=False
+        # is_horizontal=0 means vertical border LINE = horizontal split (left/right) = Pair.horizontal=True
+        target_pair = None
+        closest_distance = float('inf')
+
+        for pair in layout.pairs_root.self_and_descendants():
+            if not pair.between_borders:
+                continue
+
+            # Check if this pair's orientation matches what we're looking for
+            # Pair.horizontal=True means left|right split, which has a VERTICAL border line
+            pair_has_vertical_line = pair.horizontal
+            looking_for_vertical_line = (is_horizontal == 0)
+
+            if pair_has_vertical_line != looking_for_vertical_line:
+                continue
+
+            border = pair.between_borders[0]
+            if pair.horizontal:
+                # Vertical border line - compare x coordinate
+                border_center = (border.left + border.right) / 2
+                distance = abs(border_x - border_center)
+            else:
+                # Horizontal border line - compare y coordinate
+                border_center = (border.top + border.bottom) / 2
+                distance = abs(border_y - border_center)
+
+            if distance < closest_distance:
+                closest_distance = distance
+                target_pair = pair
+
+        if target_pair is None:
+            return
+
+        # Adjust bias based on increment
+        # For horizontal split (left|right): positive increment = move border right = increase bias
+        # For vertical split (top/bottom): positive increment = move border down = increase bias
+        dimension = target_pair.width if target_pair.horizontal else target_pair.height
+        if dimension > 0:
+            # Convert cell increment to bias change (rough: assume ~10 cells across)
+            bias_change = increment * 0.02
+            new_bias = max(0.1, min(0.9, target_pair.bias + bias_change))
+            if new_bias != target_pair.bias:
+                target_pair.bias = new_bias
+                tab.relayout()
 
     def open_kitty_website(self) -> None:
         self.open_url(website_url())

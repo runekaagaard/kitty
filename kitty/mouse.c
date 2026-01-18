@@ -920,6 +920,167 @@ closest_window_for_event(unsigned int *window_idx) {
     return ans;
 }
 
+// Border drag resize functions {{{
+
+// Convert GL coordinate back to pixel coordinate
+static inline double
+gl_to_px_x(float gl, unsigned int viewport_width) {
+    return (gl + 1.0) * viewport_width / 2.0;
+}
+
+static inline double
+gl_to_px_y(float gl, unsigned int viewport_height) {
+    return (1.0 - gl) * viewport_height / 2.0;
+}
+
+// Check if a border is horizontal (wider than tall) - determines cursor direction
+static inline bool
+border_is_horizontal(BorderRect *br, unsigned int vp_width, unsigned int vp_height) {
+    double width = gl_to_px_x(br->right, vp_width) - gl_to_px_x(br->left, vp_width);
+    double height = gl_to_px_y(br->bottom, vp_height) - gl_to_px_y(br->top, vp_height);
+    return width > height;
+}
+
+// Find border at mouse position, returns index or -1
+// Also sets is_horizontal output parameter
+static int
+find_border_at(double mouse_x, double mouse_y, bool *is_horizontal) {
+    OSWindow *osw = global_state.callback_os_window;
+    if (!osw || osw->num_tabs == 0) return -1;
+
+    Tab *tab = osw->tabs + osw->active_tab;
+    BorderRects *br = &tab->border_rects;
+    unsigned int vp_width = osw->viewport_width;
+    unsigned int vp_height = osw->viewport_height;
+
+    // Tolerance for hit detection (pixels)
+    const double tolerance = 5.0;
+
+    for (unsigned int i = 0; i < br->num_border_rects; i++) {
+        BorderRect *rect = br->rect_buf + i;
+
+        // Convert GL coords to pixel coords
+        double left = gl_to_px_x(rect->left, vp_width);
+        double right = gl_to_px_x(rect->right, vp_width);
+        double top = gl_to_px_y(rect->top, vp_height);
+        double bottom = gl_to_px_y(rect->bottom, vp_height);
+
+        // Expand hitbox by tolerance
+        double hit_left = left - tolerance;
+        double hit_right = right + tolerance;
+        double hit_top = top - tolerance;
+        double hit_bottom = bottom + tolerance;
+
+        if (mouse_x >= hit_left && mouse_x <= hit_right &&
+            mouse_y >= hit_top && mouse_y <= hit_bottom) {
+            if (is_horizontal) {
+                *is_horizontal = border_is_horizontal(rect, vp_width, vp_height);
+            }
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+static void
+start_border_drag(double mouse_x, double mouse_y, bool is_horizontal, double border_x, double border_y) {
+    global_state.border_drag.active = true;
+    global_state.border_drag.is_horizontal = is_horizontal;
+    global_state.border_drag.start_x = mouse_x;
+    global_state.border_drag.start_y = mouse_y;
+    global_state.border_drag.border_x = border_x;
+    global_state.border_drag.border_y = border_y;
+    global_state.border_drag.last_delta = 0;
+}
+
+static void
+update_border_drag(double mouse_x, double mouse_y) {
+    if (!global_state.border_drag.active) return;
+
+    OSWindow *osw = global_state.callback_os_window;
+    if (!osw) return;
+
+    unsigned int cell_size = global_state.border_drag.is_horizontal
+        ? osw->fonts_data->fcm.cell_height
+        : osw->fonts_data->fcm.cell_width;
+
+    double delta_px = global_state.border_drag.is_horizontal
+        ? (mouse_y - global_state.border_drag.start_y)
+        : (mouse_x - global_state.border_drag.start_x);
+
+    int delta_cells = (int)(delta_px / cell_size);
+
+    if (delta_cells != global_state.border_drag.last_delta) {
+        int increment = delta_cells - global_state.border_drag.last_delta;
+        // Call Python to resize the border
+        call_boss(border_drag_resize, "ddii",
+            global_state.border_drag.border_x,
+            global_state.border_drag.border_y,
+            increment,
+            global_state.border_drag.is_horizontal ? 1 : 0);
+        global_state.border_drag.last_delta = delta_cells;
+    }
+}
+
+static void
+end_border_drag(void) {
+    global_state.border_drag.active = false;
+    global_state.border_drag.last_delta = 0;
+}
+
+// Handle border mouse events, returns true if handled
+static bool
+handle_border_mouse(int button, int action) {
+    OSWindow *osw = global_state.callback_os_window;
+    if (!osw) return false;
+
+    double mouse_x = osw->mouse_x;
+    double mouse_y = osw->mouse_y;
+
+    // Handle ongoing border drag
+    if (global_state.border_drag.active) {
+        if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
+            end_border_drag();
+            mouse_cursor_shape = DEFAULT_POINTER;
+            set_mouse_cursor(mouse_cursor_shape);
+            return true;
+        } else if (button < 0) {  // mouse move
+            update_border_drag(mouse_x, mouse_y);
+            mouse_cursor_shape = global_state.border_drag.is_horizontal
+                ? NS_RESIZE_POINTER : EW_RESIZE_POINTER;
+            set_mouse_cursor(mouse_cursor_shape);
+            return true;
+        }
+        return false;
+    }
+
+    // Check for border hover/click
+    bool is_horizontal;
+    int border_idx = find_border_at(mouse_x, mouse_y, &is_horizontal);
+
+    if (border_idx >= 0) {
+        // Mouse is over a border
+        mouse_cursor_shape = is_horizontal ? NS_RESIZE_POINTER : EW_RESIZE_POINTER;
+        set_mouse_cursor(mouse_cursor_shape);
+
+        if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+            // Start dragging
+            Tab *tab = osw->tabs + osw->active_tab;
+            BorderRect *rect = tab->border_rects.rect_buf + border_idx;
+            double border_x = (gl_to_px_x(rect->left, osw->viewport_width) +
+                               gl_to_px_x(rect->right, osw->viewport_width)) / 2.0;
+            double border_y = (gl_to_px_y(rect->top, osw->viewport_height) +
+                               gl_to_px_y(rect->bottom, osw->viewport_height)) / 2.0;
+            start_border_drag(mouse_x, mouse_y, is_horizontal, border_x, border_y);
+            return true;
+        }
+        return true;  // Handled hover
+    }
+
+    return false;
+}
+// }}}
+
 void
 focus_in_event(void) {
     // Ensure that no URL is highlighted and the mouse cursor is in default shape
@@ -1058,6 +1219,13 @@ mouse_event(const int button, int modifiers, int action) {
     bool in_tab_bar;
     unsigned int window_idx = 0;
     Window *w = NULL;
+
+    // Handle border drag resizing (must be before window_for_event since
+    // borders are in the gaps between windows)
+    if (handle_border_mouse(button, action)) {
+        return;
+    }
+
     if (OPT(debug_keyboard)) {
         if (button < 0) { debug("%s x: %.1f y: %.1f ", "\x1b[36mMove\x1b[m", global_state.callback_os_window->mouse_x, global_state.callback_os_window->mouse_y); }
         else { debug("%s mouse_button: %d %s", action == GLFW_RELEASE ? "\x1b[32mRelease\x1b[m" : "\x1b[31mPress\x1b[m", button, format_mods(modifiers)); }

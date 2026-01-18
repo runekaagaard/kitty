@@ -470,3 +470,42 @@ class Layout:
         if m is None:
             return False
         return self.set_layout_state(s, m.get)
+
+    def drag_resize_target_windows(self, x: float, y: float, all_windows: WindowList) -> tuple[WindowType | None, WindowType | None]:
+        # Identify the window where the click occurred and which horizontal and
+        # vertical half it was in
+        click_window: WindowType | None = None
+        left_half_clicked = False
+        top_half_clicked = False
+        for w in all_windows.all_windows:
+            g = w.geometry
+            if x >= g.left and x <= g.right and y >= g.top and y <= g.bottom:
+                click_window = w
+                left_half_clicked = g.left <= x and x <= g.left + (float(g.right - g.left) / 2.0)
+                top_half_clicked = g.top <= y and y <= g.top + (float(g.bottom - g.top) / 2.0)
+                break
+
+        if click_window is None:
+            return (None, None)
+
+        neighbors = self.neighbors_for_window(click_window, all_windows)
+
+        # Infer which window should be horizontally resized based on click
+        # position and layout state
+        horizontal_target: WindowType | None = click_window
+        if ((left_half_clicked and len(neighbors.get("left", [])) > 0) or
+            (not left_half_clicked and len(neighbors.get("left", [])) > 0 and len(neighbors.get("right", [])) == 0)):
+            left_neighbors = neighbors.get("left", [])
+            if left_neighbors:
+                horizontal_target = all_windows.id_map.get(left_neighbors[0])
+
+        # Infer which window should be vertically resized based on click
+        # position and layout state
+        vertical_target: WindowType | None = click_window
+        if ((top_half_clicked and len(neighbors.get("top", [])) > 0) or
+            (not top_half_clicked and len(neighbors.get("top", [])) > 0 and len(neighbors.get("bottom", [])) == 0)):
+            top_neighbors = neighbors.get("top", [])
+            if top_neighbors:
+                vertical_target = all_windows.id_map.get(top_neighbors[0])
+
+        return (horizontal_target, vertical_target)
