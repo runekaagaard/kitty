@@ -14,7 +14,6 @@ from contextlib import contextmanager, suppress
 from functools import partial
 from gettext import gettext as _
 from gettext import ngettext
-from math import floor
 from time import sleep
 from typing import (
     TYPE_CHECKING,
@@ -422,7 +421,6 @@ class Boss:
         )
         self.args: CLIOptions = args
         self.mouse_handler: Callable[[WindowSystemMouseEvent], None] | None = None
-        self.drag_resize_active = False
         set_boss(self)
         self.mappings: Mappings = Mappings(global_shortcuts, self.refresh_active_tab_bar)
         self.notification_manager: NotificationManager = NotificationManager(debug=self.args.debug_keyboard or self.args.debug_rendering)
