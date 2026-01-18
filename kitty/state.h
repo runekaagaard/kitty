@@ -369,10 +369,8 @@ typedef struct GlobalState {
     int active_drag_button, tracked_drag_button;
     struct {
         bool active;
-        bool is_horizontal;  // true for horizontal border (N-S resize)
-        double start_x, start_y;  // mouse position at drag start
-        double border_x, border_y;  // center of the border being dragged (pixel coords)
-        int last_delta;  // accumulated delta in cells
+        bool is_horizontal;
+        double start_x, start_y;
     } border_drag;
     CloseRequest quit_request;
     bool redirect_mouse_handling;
