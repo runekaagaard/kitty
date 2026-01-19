@@ -2352,6 +2352,39 @@ class Boss:
         if tab:
             tab.set_active_window(window_id)
 
+    _border_drag_pair: 'Optional[Any]' = None
+
+    def border_drag_resize(self, mouse_x: float, mouse_y: float, bias_delta: float, is_horizontal: int, drag_start: int) -> None:
+        """Called from C when user drags a window border."""
+        tab = self.active_tab
+        if not tab:
+            return
+        layout = tab.current_layout
+        if not hasattr(layout, 'pairs_root'):
+            return
+
+        if drag_start:
+            # Find and lock to the closest pair
+            self._border_drag_pair = None
+            closest_dist = float('inf')
+            for pair in layout.pairs_root.self_and_descendants():
+                if not pair.between_borders:
+                    continue
+                # is_horizontal=1 means horizontal LINE = Pair.horizontal=False
+                if (is_horizontal == 1) == pair.horizontal:
+                    continue
+                border = pair.between_borders[0]
+                if pair.horizontal:
+                    dist = abs(mouse_x - (border.left + border.right) / 2)
+                else:
+                    dist = abs(mouse_y - (border.top + border.bottom) / 2)
+                if dist < closest_dist:
+                    closest_dist = dist
+                    self._border_drag_pair = pair
+        elif self._border_drag_pair and bias_delta != 0:
+            self._border_drag_pair.bias = max(0.1, min(0.9, self._border_drag_pair.bias + bias_delta))
+            tab.relayout()
+
     def open_kitty_website(self) -> None:
         self.open_url(website_url())
 

@@ -920,6 +920,121 @@ closest_window_for_event(unsigned int *window_idx) {
     return ans;
 }
 
+// Border drag resize functions {{{
+
+// Convert GL coordinate back to pixel coordinate
+static inline double
+gl_to_px_x(float gl, unsigned int viewport_width) {
+    return (gl + 1.0) * viewport_width / 2.0;
+}
+
+static inline double
+gl_to_px_y(float gl, unsigned int viewport_height) {
+    return (1.0 - gl) * viewport_height / 2.0;
+}
+
+// Check if a border is horizontal (wider than tall) - determines cursor direction
+static inline bool
+border_is_horizontal(BorderRect *br, unsigned int vp_width, unsigned int vp_height) {
+    double width = gl_to_px_x(br->right, vp_width) - gl_to_px_x(br->left, vp_width);
+    double height = gl_to_px_y(br->bottom, vp_height) - gl_to_px_y(br->top, vp_height);
+    return width > height;
+}
+
+// Check if mouse is over any border, sets is_horizontal output parameter
+static bool
+mouse_over_border(double mouse_x, double mouse_y, bool *is_horizontal) {
+    OSWindow *osw = global_state.callback_os_window;
+    if (!osw || osw->num_tabs == 0) return false;
+
+    Tab *tab = osw->tabs + osw->active_tab;
+    BorderRects *br = &tab->border_rects;
+    unsigned int vp_width = osw->viewport_width;
+    unsigned int vp_height = osw->viewport_height;
+    const double tolerance = 5.0;
+
+    for (unsigned int i = 0; i < br->num_border_rects; i++) {
+        BorderRect *rect = br->rect_buf + i;
+        if (rect->color != 0) continue;  // Only between-pair borders
+
+        double left = gl_to_px_x(rect->left, vp_width);
+        double right = gl_to_px_x(rect->right, vp_width);
+        double top = gl_to_px_y(rect->top, vp_height);
+        double bottom = gl_to_px_y(rect->bottom, vp_height);
+
+        if (mouse_x >= left - tolerance && mouse_x <= right + tolerance &&
+            mouse_y >= top - tolerance && mouse_y <= bottom + tolerance) {
+            if (is_horizontal) {
+                *is_horizontal = border_is_horizontal(rect, vp_width, vp_height);
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+static void
+update_border_drag(double mouse_x, double mouse_y) {
+    OSWindow *osw = global_state.callback_os_window;
+    if (!osw) return;
+
+    double delta_px = global_state.border_drag.is_horizontal
+        ? (mouse_y - global_state.border_drag.start_y)
+        : (mouse_x - global_state.border_drag.start_x);
+    double dimension = global_state.border_drag.is_horizontal
+        ? osw->viewport_height : osw->viewport_width;
+    double bias_delta = delta_px / dimension;
+
+    if (bias_delta != 0) {
+        call_boss(border_drag_resize, "dddii", mouse_x, mouse_y, bias_delta,
+                  global_state.border_drag.is_horizontal ? 1 : 0, 0);
+        global_state.border_drag.start_x = mouse_x;
+        global_state.border_drag.start_y = mouse_y;
+    }
+}
+
+// Handle border mouse events, returns true if handled
+static bool
+handle_border_mouse(int button, int action) {
+    OSWindow *osw = global_state.callback_os_window;
+    if (!osw) return false;
+
+    double mouse_x = osw->mouse_x, mouse_y = osw->mouse_y;
+
+    // Handle ongoing drag
+    if (global_state.border_drag.active) {
+        if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
+            global_state.border_drag.active = false;
+            mouse_cursor_shape = DEFAULT_POINTER;
+        } else if (button < 0) {
+            update_border_drag(mouse_x, mouse_y);
+            mouse_cursor_shape = global_state.border_drag.is_horizontal
+                ? NS_RESIZE_POINTER : EW_RESIZE_POINTER;
+        }
+        set_mouse_cursor(mouse_cursor_shape);
+        return true;
+    }
+
+    // Check hover/click
+    bool is_horizontal;
+    if (!mouse_over_border(mouse_x, mouse_y, &is_horizontal)) return false;
+
+    mouse_cursor_shape = is_horizontal ? NS_RESIZE_POINTER : EW_RESIZE_POINTER;
+    set_mouse_cursor(mouse_cursor_shape);
+
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS) {
+        global_state.border_drag.active = true;
+        global_state.border_drag.is_horizontal = is_horizontal;
+        global_state.border_drag.start_x = mouse_x;
+        global_state.border_drag.start_y = mouse_y;
+        // Tell Python which pair to target (drag_start=1)
+        call_boss(border_drag_resize, "dddii", mouse_x, mouse_y, 0.0,
+                  is_horizontal ? 1 : 0, 1);
+    }
+    return true;
+}
+// }}}
+
 void
 focus_in_event(void) {
     // Ensure that no URL is highlighted and the mouse cursor is in default shape
@@ -1058,6 +1173,13 @@ mouse_event(const int button, int modifiers, int action) {
     bool in_tab_bar;
     unsigned int window_idx = 0;
     Window *w = NULL;
+
+    // Handle border drag resizing (must be before window_for_event since
+    // borders are in the gaps between windows)
+    if (handle_border_mouse(button, action)) {
+        return;
+    }
+
     if (OPT(debug_keyboard)) {
         if (button < 0) { debug("%s x: %.1f y: %.1f ", "\x1b[36mMove\x1b[m", global_state.callback_os_window->mouse_x, global_state.callback_os_window->mouse_y); }
         else { debug("%s mouse_button: %d %s", action == GLFW_RELEASE ? "\x1b[32mRelease\x1b[m" : "\x1b[31mPress\x1b[m", button, format_mods(modifiers)); }
